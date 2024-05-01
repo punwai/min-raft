@@ -4,24 +4,32 @@
  * sequence of "commands" or "transactions".
  */
 
+use std::collections::HashMap;
 
-pub struct StateMachine {
-    pub hashmap: HashMap<String, String>,
+use crate::command::Command;
+
+pub trait StateMachine {
+    type Command;
+
+    fn execute_command(&mut self, command: Self::Command) {
+        self.execute_command(command);
+    }
 }
 
-// Very simple state-machine. Only operable by one
-impl StateMachine {
-    pub fn new() -> Self {
-        Self {
-        }
-    }
+// Define the default StateMachine. This will be a HashMap of Strings to Strings
 
-    pub fn get(&mut self, key: String) -> Option<String> {
-        self.hashmap.get(&key).cloned()
-    }
+struct HashMapStateMachine {
+    hashmap: HashMap<String, String>,
+}
 
-    pub fn set(&mut self, key: String, value: String) {
-        self.hashmap.insert(key, value);
+impl StateMachine for HashMap<String, String> {
+    type Command = Command;
+
+    fn execute_command(&mut self, command: Self::Command) {
+        match command {
+            Command::Set(key, value) => self.insert(key, value),
+            Command::Get(key) => self.get(&key).map(|value| value.to_string()),
+        };
     }
 }
 

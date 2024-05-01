@@ -1,13 +1,15 @@
 
 // The Raft state machine.
 
-use std::{net::SocketAddr, sync::{Arc, Mutex, MutexGuard}};
-use crate::{election::Quorum, logger::{LockedLogger, Logger}, messages::types::{AppendEntriesMessage, AppendEntriesResponse, RequestVoteMessage, RequestVoteResponse}, network::Network, raft_log, rpc::RaftRpc};
+use std::{fs::File, io::Write, sync::{Arc, Mutex, MutexGuard}};
+use crate::{election::Quorum, logger::LockedLogger, messages::types::{AppendEntriesMessage, AppendEntriesResponse, CallMessage, CallResponse, RequestVoteMessage, RequestVoteResponse}, network::Network, raft_log, rpc::RaftRpc};
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 
 const QUORUM_SIZE: u64 = 3;
 type Command = String;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LogEntry<T> {
     pub term: u64,
     pub message: T,
@@ -23,6 +25,8 @@ pub struct LeaderState {
 
 // Read only variables (no need for mutual exclusion)
 pub struct Config {
+    pub id: u64,
+    pub port_id: u32,
     pub election_timeout: u128
 }
 
@@ -30,7 +34,6 @@ pub struct RaftServer {
     // RaftServer stores mutex to the state. The state is apassed
     pub config: Config,
     pub state: Arc<Mutex<State>>,
-    pub server_address: SocketAddr,
     pub network: Arc<Network>,
     pub logger: LockedLogger
 }
@@ -39,13 +42,8 @@ pub struct RaftServer {
 impl RaftServer {
     // Initialize the RaftServer
     pub async fn new(port_id: u32, id: u64) -> Arc<Self> {
-        let state = State::new(id, 0, vec![]);
+        let state = State::new(id, 0, vec![], format!("raft_log_{}.json", id));
         let state = Arc::new(Mutex::new(state));
-        let rpc = RaftRpc::new(state.clone()).await.unwrap();
-
-
-        let server_address = rpc.run_server(port_id).await.unwrap();
-        println!("RPC started with address {:?}", server_address);
 
         let network = 
             Arc::new(Network::new_from_file("network.json", Some(id)));
@@ -56,12 +54,13 @@ impl RaftServer {
         let mut rng = rand::thread_rng(); // Create an instance of a random number generator
 
         let config = Config {
-            election_timeout: ELECTION_TIMEOUT + rng.gen_range(0..200000)
+            election_timeout: ELECTION_TIMEOUT + rng.gen_range(0..500000),
+            id,
+            port_id,
         };
 
         Arc::new(RaftServer {
             state,
-            server_address,
             network,
             logger,
             config
@@ -70,6 +69,11 @@ impl RaftServer {
 
     // We run a heartbeat to 
     pub async fn start(self: Arc<Self>) {
+        let rpc = RaftRpc::new(self.clone()).await.unwrap();
+        let server_address = rpc.run_server(self.config.port_id as u32).await.unwrap();
+
+        raft_log! ( self.logger, "Started RPC server with address {:?}", server_address );
+
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -173,7 +177,7 @@ fn begin_election(server: Arc<RaftServer>) {
     );
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Status {
     Follower,
     Candidate,
@@ -181,7 +185,8 @@ pub enum Status {
 }
 
 pub struct State {
-    pub id: u64, // The server's own ID
+    pub id: u64,
+    pub log_file: File,
 
     pub status: Status,
     // Persistent State on all servers
@@ -198,10 +203,14 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(id: u64, current_term: u64, log: Vec<LogEntry<Command>>) -> Self {
+    pub fn new(id: u64, current_term: u64, log: Vec<LogEntry<Command>>, log_file: String) -> Self {
         let election_timeout = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros();
+        let log_file = File::create(log_file).unwrap();
+
         Self {
             id,
+            log_file,
+
             status: Status::Follower,
             current_term,
             voted_for: None,
@@ -216,7 +225,27 @@ impl State {
         }
     }
 
-    pub fn write_persistent(&mut self) {
+    pub fn add_logs(&mut self, log_entries: Vec<LogEntry<Command>>) {
+        for log_entry in log_entries{
+            let json = serde_json::to_string(&log_entry).unwrap();
+            self.log_file.write_all(json.as_bytes()).unwrap();
+            self.log_file.write_all("\n".as_bytes()).unwrap();
+            self.log.push(log_entry);
+        }
+    }
+
+    // Prune the log to the given length
+    pub fn prune_logs(&mut self, length: u64) {
+        self.log.truncate(length as usize);
+        self.write_logs();
+    }
+
+    fn write_logs(&mut self) {
+        for entry in self.log.iter() {
+            let json = serde_json::to_string(&entry).unwrap();
+            self.log_file.write_all(json.as_bytes()).unwrap();
+            self.log_file.write_all("\n".as_bytes()).unwrap();
+        }
     }
 }
 
@@ -239,7 +268,7 @@ pub fn handle_request_votes(request_vote_message: RequestVoteMessage, state: &mu
             if term > state.current_term {
                 state.current_term = term;
             }
-
+        
             state.voted_for = Some(candidate_id);
             println!("{:?} voting for {:?} on term {:?}", state.id, candidate_id, term);
             return RequestVoteResponse { term: state.current_term, vote_granted: true };
@@ -278,7 +307,6 @@ pub fn check_status(state: &mut MutexGuard<State>, term: u64) -> anyhow::Result<
 }
 
 pub fn handle_append_entries(append_entries_message: AppendEntriesMessage, state: &mut MutexGuard<State>) -> AppendEntriesResponse {
-
     // Reset election timeout
     state.election_timeout = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros();
 
@@ -312,17 +340,16 @@ pub fn handle_append_entries(append_entries_message: AppendEntriesMessage, state
     // We discard all the ones that are not used
     if state.log.len() > curr_log_index as usize && state.log[curr_log_index as usize].term != term {
         // prune the state log -- discard all the entries that are curr_log_index and after
-        state.log.truncate(curr_log_index as usize);
-        let log_entry_list: Vec<_> = entries.iter().map(|x| 
-            LogEntry { term: term, message: x.to_string() }
-        ).collect();
-        state.log.extend(log_entry_list);
+        state.prune_logs(curr_log_index);
     }
+
+    state.add_logs(entries);
 
     // We update the commit inex to be the last thing that we've updated it to.
     // Alternatively, 
     if leader_commit > state.commit_index {
-        state.commit_index = std::cmp::min(leader_commit, state.log.len() as u64 - 1);
+        let last_log = if state.log.is_empty() { 0 } else { state.log.len() as u64 - 1 };
+        state.commit_index = std::cmp::min(leader_commit, last_log);
     }
 
     AppendEntriesResponse {
@@ -331,12 +358,68 @@ pub fn handle_append_entries(append_entries_message: AppendEntriesMessage, state
     }
 }
 
+
+pub async fn handle_call(call_message: CallMessage, server: Arc<RaftServer>) -> CallResponse {
+    // Reset election timeout
+    let message = {
+        let mut state: MutexGuard<'_, State> = server.state.lock().unwrap();
+
+        state.election_timeout = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros();
+        let CallMessage { 
+            command 
+        } = call_message;
+    
+        // serialize command
+        let command_str = serde_json::to_string(&command).unwrap();
+        if state.status != Status::Leader {
+            return CallResponse { ack: false };
+        }
+    
+        // If we are the leader, add this to our logs
+        let term = state.current_term;
+        let log_entry = LogEntry { term, message: command_str };
+        state.add_logs(vec![log_entry.clone()]);
+
+        AppendEntriesMessage {
+            term,
+            leader_id: state.id,
+            prev_log_index: state.log.len() as u64 - 1,
+            prev_log_term: state.log[state.log.len() as usize - 1].term,
+            entries: vec![log_entry],
+            leader_commit: state.commit_index
+        }
+    };
+
+    let quorum = Arc::new(Mutex::new(Quorum::new(QUORUM_SIZE as usize)));
+
+    let callback = |result: AppendEntriesResponse, peer_id: u64| -> anyhow::Result<()> {
+        let mut state = server.state.lock().unwrap();
+        if result.success {
+            let mut quorum = quorum.lock().unwrap();
+            quorum.vote(peer_id);
+            if quorum.is_quorum_pass() {
+                state.commit_index = std::cmp::max(state.commit_index, 1);
+            }
+        };
+        Ok(())
+    };
+
+    server.network.broadcast(
+        message, callback
+    ).await.unwrap();
+
+    // Condition variable that only wakes up when we have a response
+    CallResponse {
+        ack: true
+    }
+}
+
 // Given readable State and Network, send out a heartbeat.
 fn send_heartbeat(state: &State, network: Arc<Network>, logger: LockedLogger) {
     raft_log!( logger, "sending out heartbeat {:?}", state.current_term );
 
     let prev_log_index = if state.log.is_empty() { 0 } else { state.log.len() as u64 - 1 };
-    let prev_log_term = if state.log.is_empty() { 0 } else { state.log[prev_log_index as usize - 1].term };
+    let prev_log_term = if state.log.is_empty() { 0 } else { state.log[state.log.len() as usize - 1].term };
 
     let msg = {
         AppendEntriesMessage {

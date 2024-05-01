@@ -58,11 +58,6 @@ impl Network {
         Self { peers }
     }
 
-    // Broadcast a message to all peers. The way to send a message to a 
-    // peer is asynchronously -- you send it all asynchronously, then you
-    // do a handle to join it all. You loop and you start one with a callback.
-    // you aggregate votes. The listeners times out after 200ms.
-
     // Send one message to peer
     async fn send_one<T: Message, R: DeserializeOwned>(&self, peer_id: u64, message: T) -> anyhow::Result<R> {
         let peer = self
@@ -76,12 +71,7 @@ impl Network {
         Ok(res)
     }
 
-    // Broadcast a message to all peers. The way to send a message to a 
-    // peer is asynchronously -- you send it all asynchronously, then you
-    // do a handle to join it all. You loop and you start one with a callback.
-    // you aggregate votes. The listeners times out after 200ms.
-
-    // Send one message to peer
+    // Broadcast a message to all peers.
     pub async fn broadcast<T: Message, R: DeserializeOwned, F>(&self, message: T, mut callback: F) -> anyhow::Result<()> 
         where F: FnMut(R, u64) -> anyhow::Result<()>
     {

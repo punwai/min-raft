@@ -6,6 +6,7 @@
 
 use jsonrpsee::{rpc_params, types::Params};
 use jsonrpsee_core::params::ArrayParams;
+use crate::{command::Command, raft_sm::LogEntry};
 use serde::{Serialize, Deserialize};
 
 pub trait Message where Self: Sized + Clone {
@@ -82,7 +83,7 @@ pub struct AppendEntriesMessage {
     pub leader_id: u64,
     pub prev_log_index: u64,
     pub prev_log_term: u64,
-    pub entries: Vec<String>,
+    pub entries: Vec<LogEntry<String>>,
     pub leader_commit: u64,
 }
 
@@ -112,7 +113,35 @@ impl Message for AppendEntriesMessage {
 
         Ok(AppendEntriesMessage { term, leader_id, prev_log_index, prev_log_term, entries, leader_commit })
     }
-    
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallMessage {
+    pub command: Command
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallResponse {
+    pub ack: bool
+}
+
+
+impl Message for CallMessage {
+    const COMMAND: &'static str = "append_entries";
+
+    fn into_params(&self) -> ArrayParams {
+        rpc_params![
+            self.command.clone()
+        ]
+    }
+
+    fn from_params(params: Params<'_>) -> anyhow::Result<Self> {
+        let mut params_sequence = params.sequence();
+
+        let command= params_sequence.next()?;
+
+        Ok(CallMessage { command })
+    }
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize)]

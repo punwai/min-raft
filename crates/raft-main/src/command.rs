@@ -2,20 +2,21 @@
  * Executable commands in the core Raft system
  */
 
-use crate::sm::StateMachine;
+use serde::{Deserialize, Serialize};
 
 // 
-pub enum Commands {
-    GetCommand(u64),
-    SetCommand(u64, u64),
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Command {
+    Get(String),
+    Set(String, String),
 }
 
 // Make it so 
-impl Commands {
-    pub fn execute(&self, state: &mut StateMachine) {
-        match self {
-            SetCommand(key, value) => state.set(key, value)
-        }
-    }
+impl Command {
+    // pub fn execute(&self, state: &mut StateMachine) {
+    //     match self {
+    //         SetCommand(key, value) => state.set(key, value)
+    //     }
+    // }
 }
 
