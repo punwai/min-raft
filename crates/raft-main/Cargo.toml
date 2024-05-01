@@ -1,0 +1,23 @@
+[package]
+name = "raft-main"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+jsonrpsee = { version = "0.22.5", features = ["server-core", "server", "client"] }
+tracing-subscriber = "0.3.18"
+serde = { version = "1.0" }
+jsonrpsee-core = "0.22.5"
+tracing = "0.1.40"
+anyhow = "1.0.82"
+tokio = "1.37.0"
+jsonrpsee-client-transport = "0.22.5"
+serde_json = "1.0.116"
+rand = "0.8.5"
+
+
+[[example]]
+name = "simulate-cluster"
+path = "examples/simulate-cluster.rs"

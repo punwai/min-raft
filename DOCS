@@ -1,0 +1,10 @@
+// Needed to learn RAFT ASAP for the purpose of trying to understand consensus algorithms (for fun)
+
+Strong Leader: Raft uses a strong form of leadership. log entries flom leaders -> followers.
+Leader election: Randomized timers used to elect leaders. Adds only a small amount of mechanism to the 
+
+Replicated State Machines
+- Machines on collection of servers compute identitcal copies of State
+- Typically implemented with replicated log.
+    - server stores a log containing series of commands. State machine executes in order.
+
